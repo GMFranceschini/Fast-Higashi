@@ -54,25 +54,48 @@ def get_config(config_path = "./config.jSON"):
 
 
 def get_free_gpu(num=1):
-	# os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free > ./tmp')
-	os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Total > ./tmp1')
-	os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Used > ./tmp2')
-	memory_all = [int(x.split()[2]) for x in open('tmp1', 'r').readlines()]
-	memory_used = [int(x.split()[2]) for x in open('tmp2', 'r').readlines()]
-	memory_available = [m1-m2 for m1,m2 in zip(memory_all, memory_used)]
-	if len(memory_available) > 0:
-		max_mem = np.max(memory_available)
-		ids = np.where(memory_available >= max_mem-1000)[0]
-		chosen_id = int(np.random.choice(ids, 1)[0])
-		print("setting to gpu:%d" % chosen_id, "available memory =", max_mem, "MB")
-		sys.stdout.flush()
-		torch.cuda.set_device(chosen_id)
-		return torch.device("cuda:%d" % chosen_id), chosen_id, max_mem * 1000000
-	else:
-		print("running on cpu device then")
-		import psutil
-		mem = psutil.virtual_memory().available
-		return None, None, mem
+    # Get the list of allocated GPUs from CUDA_VISIBLE_DEVICES
+    visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES', None)
+    
+    if visible_devices is None:
+        print("No GPUs allocated. Running on CPU.")
+        mem = psutil.virtual_memory().available
+        return None, None, mem  # Return CPU memory
+
+    # Map visible devices to physical device IDs
+    visible_devices = [int(x) for x in visible_devices.split(',')]
+
+    # Query memory for allocated GPUs
+    memory_all = []
+    memory_used = []
+    for gpu_id in visible_devices:
+        try:
+            props = torch.cuda.get_device_properties(gpu_id)
+            total_mem = props.total_memory  # Total GPU memory
+            reserved_mem = torch.cuda.memory_reserved(gpu_id)  # Reserved memory
+            used_mem = torch.cuda.memory_allocated(gpu_id)  # Used memory
+            available_mem = total_mem - reserved_mem  # Free memory
+            memory_all.append(total_mem)
+            memory_used.append(used_mem)
+        except Exception as e:
+            print(f"Error querying GPU {gpu_id}: {e}")
+            memory_all.append(0)
+            memory_used.append(0)
+
+    # Calculate available memory
+    memory_available = [m1 - m2 for m1, m2 in zip(memory_all, memory_used)]
+    if len(memory_available) > 0:
+        max_mem = np.max(memory_available)
+        ids = np.where(np.array(memory_available) >= max_mem - 1000)[0]
+        chosen_id = int(np.random.choice(ids, 1)[0])
+        global_gpu_id = visible_devices[chosen_id]  # Map back to global GPU ID
+        print(f"Setting to GPU:{global_gpu_id}, available memory = {max_mem} bytes")
+        torch.cuda.set_device(global_gpu_id)
+        return torch.device(f"cuda:{global_gpu_id}"), global_gpu_id, max_mem
+    else:
+        print("No free GPUs found. Running on CPU.")
+        mem = psutil.virtual_memory().available
+        return None, None, mem
 
 # def get_memory_free(gpu_index):
 # 	try:
